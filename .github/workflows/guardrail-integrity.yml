@@ -1,0 +1,231 @@
+name: Guardrail Integrity
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created, edited]
+
+# This workflow intentionally runs in the trusted base-repository context.
+# It never checks out, installs, or executes pull-request code.
+#
+# The Guardrail status is NOT posted with GITHUB_TOKEN. It is signed by a
+# dedicated GitHub App whose private key is stored in the `guardrail-trust`
+# environment. That environment must allow only the `main` branch. A normal
+# `pull_request` workflow has GITHUB_REF=refs/pull/<n>/merge and therefore
+# cannot access the signing secret.
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  evaluate:
+    name: Guardrail Policy
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: guardrail-trust
+      deployment: false
+
+    steps:
+      - name: Create Guardrail signer token
+        id: guardrail-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.GUARDRAIL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GUARDRAIL_APP_PRIVATE_KEY }}
+          permission-statuses: write
+
+      - name: Use Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Evaluate protected surfaces
+        env:
+          READ_TOKEN: ${{ github.token }}
+          STATUS_TOKEN: ${{ steps.guardrail-token.outputs.token }}
+          EVENT_PATH: ${{ github.event_path }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          import fs from 'node:fs';
+
+          const readToken = process.env.READ_TOKEN;
+          const statusToken = process.env.STATUS_TOKEN;
+          const apiUrl = process.env.API_URL;
+          const repository = process.env.REPOSITORY;
+          const runUrl = process.env.RUN_URL;
+          const event = JSON.parse(fs.readFileSync(process.env.EVENT_PATH, 'utf8'));
+
+          if (!readToken || !statusToken || !apiUrl || !repository) {
+            throw new Error('Required Guardrail runtime context is missing.');
+          }
+
+          async function api(path, token, options = {}) {
+            const response = await fetch(`${apiUrl}${path}`, {
+              ...options,
+              headers: {
+                Accept: 'application/vnd.github+json',
+                Authorization: `Bearer ${token}`,
+                'X-GitHub-Api-Version': '2026-03-10',
+                ...(options.headers ?? {})
+              }
+            });
+
+            if (!response.ok) {
+              const body = await response.text();
+              throw new Error(`${options.method ?? 'GET'} ${path} -> ${response.status}: ${body}`);
+            }
+
+            if (response.status === 204) {
+              return null;
+            }
+
+            return response.json();
+          }
+
+          async function readApi(path, options = {}) {
+            return api(path, readToken, options);
+          }
+
+          async function paginated(path) {
+            const items = [];
+            for (let page = 1; ; page += 1) {
+              const separator = path.includes('?') ? '&' : '?';
+              const batch = await readApi(`${path}${separator}per_page=100&page=${page}`);
+              items.push(...batch);
+              if (batch.length < 100) {
+                return items;
+              }
+            }
+          }
+
+          const prNumber = event.pull_request?.number ?? event.issue?.number;
+          if (!prNumber) {
+            console.log('No pull request is associated with this event.');
+            process.exit(0);
+          }
+
+          const pullRequest = event.pull_request ?? await readApi(`/repos/${repository}/pulls/${prNumber}`);
+          const headSha = pullRequest.head.sha;
+          const repositoryOwner = event.repository.owner.login;
+
+          async function postStatus(state, description) {
+            await api(`/repos/${repository}/statuses/${headSha}`, statusToken, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                state,
+                context: 'Guardrail Integrity',
+                description,
+                target_url: runUrl
+              })
+            });
+          }
+
+          await postStatus('pending', 'Evaluating protected-surface policy.');
+
+          const exactProtectedPaths = new Set([
+            '.env.example',
+            '.gitignore',
+            '.node-version',
+            'AGENTS.md',
+            'package.json',
+            'pnpm-lock.yaml',
+            'pnpm-workspace.yaml',
+            'tsconfig.json',
+            'eslint.config.mjs',
+            'next.config.ts',
+            'postcss.config.mjs',
+            'playwright.config.ts',
+            'vitest.config.ts',
+            'src/proxy.ts',
+            'docs/coding-agent-harness.md',
+            'docs/guardrail-integrity.md',
+            'docs/security-privacy.md',
+            'docs/verification-review.md',
+            'docs/product/ARCHITECTURE.md',
+            'docs/product/CONTRACTS.md',
+            'docs/product/DATA-MODEL.md',
+            'docs/product/TECH-STACK.md'
+          ]);
+
+          const protectedPrefixes = [
+            '.github/',
+            'docs/decisions/',
+            'drizzle/',
+            'migrations/',
+            'src/db/'
+          ];
+
+          const securitySensitiveSegments = new Set([
+            'auth',
+            'oauth',
+            'security',
+            'billing',
+            'payments',
+            'encryption',
+            'crypto',
+            'migrations'
+          ]);
+
+          function isProtectedPath(path) {
+            if (exactProtectedPaths.has(path)) {
+              return true;
+            }
+
+            if (protectedPrefixes.some((prefix) => path.startsWith(prefix))) {
+              return true;
+            }
+
+            if (path.startsWith('src/')) {
+              return path.split('/').some((segment) => securitySensitiveSegments.has(segment));
+            }
+
+            return false;
+          }
+
+          const changedFiles = await paginated(`/repos/${repository}/pulls/${prNumber}/files`);
+          const protectedFiles = changedFiles
+            .map((file) => file.filename)
+            .filter(isProtectedPath)
+            .sort();
+
+          if (protectedFiles.length === 0) {
+            await postStatus('success', 'No protected surface changed.');
+            console.log('Guardrail Integrity: PASS — no protected surface changed.');
+            process.exit(0);
+          }
+
+          console.log('Protected surfaces changed:');
+          for (const file of protectedFiles) {
+            console.log(`- ${file}`);
+          }
+
+          const approvalMarker = `guardrail-approved:${headSha}`;
+          const comments = await paginated(`/repos/${repository}/issues/${prNumber}/comments`);
+          const approved = comments.some((comment) =>
+            comment.user?.login === repositoryOwner &&
+            comment.author_association === 'OWNER' &&
+            comment.body?.trim() === approvalMarker
+          );
+
+          if (!approved) {
+            await postStatus('failure', 'Protected surface changed; exact owner approval is required.');
+            console.error(`Guardrail Integrity: BLOCKED. Owner must comment exactly: ${approvalMarker}`);
+            process.exit(1);
+          }
+
+          await postStatus('success', 'Protected surface change approved for this exact head SHA.');
+          console.log(`Guardrail Integrity: PASS — approval matches ${headSha}.`);
+          NODE

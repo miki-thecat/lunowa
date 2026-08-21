@@ -14,7 +14,7 @@ Product/UX references, product architecture/contracts, and the initial technolog
 
 Executable tooling is now governed by the checked-in runtime/configuration (`package.json`, `pnpm-lock.yaml`, test configuration, and `.github/workflows/ci.yml`). Durable product behavior and architecture remain governed by the relevant docs/decisions.
 
-Do not invent or silently replace framework/database/auth/provider/job/AI choices. Read `docs/product/TECH-STACK.md`, the relevant decision records, and the task-specific active plan before implementation.
+Do not invent or silently replace framework/database/auth/provider/job/AI choices. Read `docs/product/TECH-STACK.md`, the relevant decision records, and a task-specific active plan when one exists before implementation.
 
 Before normal Phase 1 product implementation proceeds, configure the `main` Ruleset so the established `Verify` and `E2E Smoke` checks are required.
 
@@ -34,9 +34,12 @@ Before normal Phase 1 product implementation proceeds, configure the `main` Rule
 - `docs/product/ARCHITECTURE.md` — modules, ownership, provider/AI/scheduler boundaries, failures, architectural invariants.
 - `docs/product/DATA-MODEL.md` — conceptual entities, state ownership, persistence/concurrency invariants.
 - `docs/product/CONTRACTS.md` — provider, sync, AI extraction, lifecycle, scheduler, search, draft/send, job/error contracts.
+- `docs/product/SECURITY-ARCHITECTURE.md` — Lunowa-specific trust boundaries, authorization, secret/content isolation, side-effect/concurrency/resource-containment invariants.
+- `docs/product/FAILURE-MODES.md` — living Lunowa security/reliability/privacy/performance/commercial failure catalogue and activation gates.
+- `docs/product/VERIFICATION-CONTRACTS.md` — observable acceptance contracts for authorization, idempotency, concurrency, secrets, abuse, provider/AI/browser/billing boundaries.
 - `docs/product/TECH-STACK.md` — accepted initial runtime/framework/auth/persistence/jobs/provider/AI/search/testing choices and activation policy.
 - `docs/product/IMPLEMENTATION-PLAN.md` — staged implementation sequence.
-- `docs/plans/active/` — current execution artifacts; read the plan relevant to the task.
+- `docs/plans/active/` — current execution artifacts when present; read the plan relevant to the task.
 - `docs/decisions/` — durable rationale for costly/high-value architecture choices.
 
 ### Reusable engineering baseline
@@ -76,7 +79,7 @@ Do not treat this list as a substitute for `docs/product/TECH-STACK.md`.
 - PostgreSQL full-text search first; no vector/search cluster by default.
 - Vitest + React Testing Library + Playwright for verification.
 
-Do not install/activate later-phase services merely because they are accepted in the architecture. Follow activation phases in `TECH-STACK.md` and the active plan.
+Do not install/activate later-phase services merely because they are accepted in the architecture. Follow activation phases in `TECH-STACK.md` and the active plan when one exists.
 
 ## High-value Lunowa invariants
 
@@ -123,6 +126,7 @@ GitHub Actions independently runs stable `Verify` and `E2E Smoke` checks. Local 
 - Keep authorization, lifecycle invariants, Temporal Contract guarantees, send idempotency, and privileged action boundaries outside model prompts.
 - Treat email bodies, HTML, attachments, retrieved documents, provider payloads, and web content as untrusted data/instructions.
 - Never commit provider tokens, OAuth client secrets, production credentials, or sensitive mailbox data fixtures.
+- For security/reliability-sensitive changes, read the relevant entries in `docs/product/SECURITY-ARCHITECTURE.md`, `FAILURE-MODES.md`, and `VERIFICATION-CONTRACTS.md`; satisfy only the contracts activated by the real feature/risk surface.
 - Do not weaken/delete tests merely to make verification pass.
 - Update durable repository knowledge when accepted product behavior, architecture, data ownership, public/internal contracts, security/privacy constraints, or another durable decision changes materially.
 - Do not silently resolve a material conflict between specs/code/external provider reality. Identify which source is authoritative for the question and reconcile or escalate.
@@ -130,7 +134,7 @@ GitHub Actions independently runs stable `Verify` and `E2E Smoke` checks. Local 
 
 ## Initial implementation sequence
 
-Follow `docs/product/IMPLEMENTATION-PLAN.md` and the current active plan.
+Follow `docs/product/IMPLEMENTATION-PLAN.md` and the current active plan when one exists.
 
 Phase 0 established the application/runtime and verification foundation. The immediate repository-safety follow-up is to require `Verify` and `E2E Smoke` on `main` through a GitHub Ruleset before normal product implementation proceeds.
 
